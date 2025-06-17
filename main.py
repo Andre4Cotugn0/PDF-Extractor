@@ -2,155 +2,180 @@
 """
 Gas Bill PDF Extractor
 Estrattore di dati da bollette del gas in formato PDF
+Elabora TUTTI i PDF in una cartella e produce un file Excel consolidato
 """
 
 import argparse
-import json
 import logging
 import sys
 from pathlib import Path
 from typing import List, Dict, Any
 import pandas as pd
+from datetime import datetime
 
 from src.extractors import GasBillExtractor
 from src.models import GasBillData
 
 
-def setup_logging(level: str = "INFO") -> None:
-    """Configura il logging"""
+def setup_logging(level: str = "INFO", log_file: str = None) -> None:
+    """Configura il logging con file per discrepanze"""
+    log_format = '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    
+    # Logger principale
     logging.basicConfig(
         level=getattr(logging, level.upper()),
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        format=log_format,
         datefmt='%Y-%m-%d %H:%M:%S'
     )
+    
+    # Logger specifico per discrepanze
+    if log_file:
+        discrepancy_logger = logging.getLogger('discrepancies')
+        discrepancy_handler = logging.FileHandler(log_file, encoding='utf-8')
+        discrepancy_handler.setFormatter(logging.Formatter(log_format))
+        discrepancy_logger.addHandler(discrepancy_handler)
+        discrepancy_logger.setLevel(logging.INFO)
 
 
-def process_single_pdf(pdf_path: str, output_dir: str = "output") -> Dict[str, Any]:
-    """Elabora un singolo file PDF"""
+def process_all_pdfs_in_folder(folder_path: str, output_excel: str, log_discrepancies: str = None) -> None:
+    """Elabora TUTTI i PDF in una cartella e produce un file Excel consolidato"""
     logger = logging.getLogger(__name__)
+    discrepancy_logger = logging.getLogger('discrepancies')
     
-    try:
-        logger.info(f"Elaborazione file: {pdf_path}")
+    folder = Path(folder_path)
+    if not folder.exists() or not folder.is_dir():
+        logger.error(f"La cartella {folder_path} non esiste o non è una cartella")
+        sys.exit(1)
+    
+    # Trova TUTTI i PDF ricorsivamente
+    pdf_files = list(folder.rglob("*.pdf"))
+    
+    if not pdf_files:
+        logger.error(f"Nessun file PDF trovato nella cartella {folder_path}")
+        sys.exit(1)
+    
+    logger.info(f"Trovati {len(pdf_files)} file PDF da elaborare")
+    
+    # Lista per raccogliere tutti i dati
+    all_data = []
+    processed_count = 0
+    error_count = 0
+    
+    # Elabora ogni PDF
+    for i, pdf_path in enumerate(pdf_files, 1):
+        logger.info(f"Elaborazione file {i}/{len(pdf_files)}: {pdf_path.name}")
         
-        # Crea estrattore
-        extractor = GasBillExtractor(pdf_path)
+        try:
+            # Crea estrattore
+            extractor = GasBillExtractor(str(pdf_path))
+            
+            # Estrae dati
+            bill_data = extractor.extract_data()
+            
+            # Converte in dizionario per Excel
+            data_dict = bill_data.to_dict()
+            data_dict['pdf_filename'] = pdf_path.name
+            data_dict['pdf_path'] = str(pdf_path)
+            data_dict['processing_order'] = i
+            
+            # Verifica qualità estrazione
+            missing_critical_fields = []
+            critical_fields = ['numero_fattura', 'importo_totale', 'codice_cliente', 'cliente_nome']
+            
+            for field in critical_fields:
+                if not data_dict.get(field):
+                    missing_critical_fields.append(field)
+            
+            if missing_critical_fields:
+                discrepancy_logger.warning(
+                    f"PDF: {pdf_path.name} - Campi critici mancanti: {', '.join(missing_critical_fields)}"
+                )
+            
+            # Verifica confidence score
+            confidence = data_dict.get('extraction_confidence', 0)
+            if confidence < 0.5:
+                discrepancy_logger.warning(
+                    f"PDF: {pdf_path.name} - Bassa confidence: {confidence:.2%}"
+                )
+            
+            all_data.append(data_dict)
+            processed_count += 1
+            
+        except Exception as e:
+            error_count += 1
+            logger.error(f"Errore nell'elaborazione di {pdf_path.name}: {e}")
+            discrepancy_logger.error(f"PDF: {pdf_path.name} - Errore: {str(e)}")
+            
+            # Aggiungi riga vuota con solo filename per mantenere traccia
+            error_dict = {'pdf_filename': pdf_path.name, 'pdf_path': str(pdf_path), 
+                         'processing_order': i, 'extraction_error': str(e)}
+            all_data.append(error_dict)
+    
+    logger.info(f"Elaborazione completata: {processed_count} successi, {error_count} errori")
+    
+    # Crea DataFrame e gestisce colonne dinamiche
+    if all_data:
+        df = pd.DataFrame(all_data)
         
-        # Estrae dati
-        bill_data = extractor.extract_data()
+        # Riordina colonne: campi importanti prima
+        important_cols = ['processing_order', 'pdf_filename', 'numero_fattura', 'cliente_nome', 
+                         'cliente_cognome', 'codice_cliente', 'importo_totale', 'data_emissione', 
+                         'consumo_mc', 'fornitore_nome', 'extraction_confidence']
         
-        # Prepara risultato
-        result = {
-            'file': pdf_path,
-            'success': True,
-            'confidence': bill_data.extraction_confidence,
-            'data': bill_data.to_dict(),
-            'error': None
-        }
+        # Mantieni solo le colonne che esistono effettivamente
+        existing_important_cols = [col for col in important_cols if col in df.columns]
+        other_cols = [col for col in df.columns if col not in existing_important_cols]
         
-        # Salva risultato
-        output_path = Path(output_dir)
-        output_path.mkdir(exist_ok=True)
+        # Riordina DataFrame
+        df = df[existing_important_cols + other_cols]
         
-        pdf_name = Path(pdf_path).stem
-        
-        # Salva come JSON
-        json_file = output_path / f"{pdf_name}_extracted.json"
-        with open(json_file, 'w', encoding='utf-8') as f:
-            json.dump(result, f, indent=2, ensure_ascii=False, default=str)
-        
-        logger.info(f"Dati salvati in: {json_file}")
-        logger.info(f"Confidence score: {bill_data.extraction_confidence:.2%}")
-        
-        return result
-        
-    except Exception as e:
-        logger.error(f"Errore nell'elaborazione di {pdf_path}: {e}")
-        return {
-            'file': pdf_path,
-            'success': False,
-            'confidence': 0.0,
-            'data': None,
-            'error': str(e)
-        }
-
-
-def process_multiple_pdfs(pdf_paths: List[str], output_dir: str = "output") -> List[Dict[str, Any]]:
-    """Elabora multipli file PDF"""
-    logger = logging.getLogger(__name__)
-    results = []
-    
-    for pdf_path in pdf_paths:
-        result = process_single_pdf(pdf_path, output_dir)
-        results.append(result)
-    
-    # Crea report riassuntivo
-    successful = [r for r in results if r['success']]
-    failed = [r for r in results if not r['success']]
-    
-    logger.info(f"Elaborazione completata:")
-    logger.info(f"  - File elaborati con successo: {len(successful)}")
-    logger.info(f"  - File con errori: {len(failed)}")
-    
-    if successful:
-        avg_confidence = sum(r['confidence'] for r in successful) / len(successful)
-        logger.info(f"  - Confidence medio: {avg_confidence:.2%}")
-    
-    # Salva report riassuntivo
-    output_path = Path(output_dir)
-    summary_file = output_path / "extraction_summary.json"
-    summary = {
-        'total_files': len(results),
-        'successful': len(successful),
-        'failed': len(failed),
-        'average_confidence': sum(r['confidence'] for r in successful) / len(successful) if successful else 0,
-        'results': results
-    }
-    
-    with open(summary_file, 'w', encoding='utf-8') as f:
-        json.dump(summary, f, indent=2, ensure_ascii=False, default=str)
-    
-    logger.info(f"Report salvato in: {summary_file}")
-    
-    return results
-
-
-def export_to_excel(results: List[Dict[str, Any]], output_file: str) -> None:
-    """Esporta i risultati in un file Excel"""
-    logger = logging.getLogger(__name__)
-    
-    # Prepara dati per Excel
-    excel_data = []
-    for result in results:
-        if result['success'] and result['data']:
-            row = result['data'].copy()
-            row['pdf_filename'] = result['file']
-            row['extraction_confidence'] = result['confidence']
-            excel_data.append(row)
-    
-    if excel_data:
-        df = pd.DataFrame(excel_data)
-        df.to_excel(output_file, index=False)
-        logger.info(f"Dati esportati in Excel: {output_file}")
+        # Salva in Excel
+        try:
+            with pd.ExcelWriter(output_excel, engine='openpyxl') as writer:
+                df.to_excel(writer, sheet_name='Bollette Gas', index=False)
+                
+                # Formatta il foglio
+                worksheet = writer.sheets['Bollette Gas']
+                
+                # Auto-adjust column widths
+                for column in worksheet.columns:
+                    max_length = 0
+                    column_letter = column[0].column_letter
+                    for cell in column:
+                        try:
+                            if len(str(cell.value)) > max_length:
+                                max_length = len(str(cell.value))
+                        except:
+                            pass
+                    adjusted_width = min(max_length + 2, 50)
+                    worksheet.column_dimensions[column_letter].width = adjusted_width
+            
+            logger.info(f"Dati esportati in Excel: {output_excel}")
+            logger.info(f"Totale righe nel file Excel: {len(df)}")
+            logger.info(f"Totale colonne nel file Excel: {len(df.columns)}")
+            
+        except Exception as e:
+            logger.error(f"Errore nella creazione del file Excel: {e}")
+            sys.exit(1)
     else:
-        logger.warning("Nessun dato da esportare in Excel")
-
+        logger.error("Nessun dato da esportare")
+        sys.exit(1)
 
 def main():
     """Funzione principale"""
     parser = argparse.ArgumentParser(
-        description="Estrattore di dati da bollette del gas in PDF"
+        description="Estrattore di dati da bollette del gas in PDF - Elabora TUTTI i PDF in una cartella"
     )
     
     parser.add_argument(
-        'input', 
-        nargs='+',
-        help='File PDF o cartella contenente PDF da elaborare'
+        'folder', 
+        help='Cartella contenente i PDF da elaborare'
     )
     
     parser.add_argument(
-        '-o', '--output',
-        default='output',
-        help='Cartella di output (default: output)'
+        '-o', '--output-excel',
+        required=True,
+        help='File Excel di output (OBBLIGATORIO)'
     )
     
     parser.add_argument(
@@ -161,61 +186,50 @@ def main():
     )
     
     parser.add_argument(
-        '--excel',
-        help='Esporta risultati in un file Excel'
-    )
-    
-    parser.add_argument(
-        '--recursive',
-        action='store_true',
-        help='Cerca PDF ricorsivamente nelle sottocartelle'
+        '--log-discrepancies',
+        help='File di log per discrepanze e errori (default: discrepancies.log)'
     )
     
     args = parser.parse_args()
     
+    # Imposta file log discrepanze se non specificato
+    if not args.log_discrepancies:
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        args.log_discrepancies = f"discrepancies_{timestamp}.log"
+    
     # Configura logging
-    setup_logging(args.log_level)
+    setup_logging(args.log_level, args.log_discrepancies)
     logger = logging.getLogger(__name__)
     
-    # Trova file PDF
-    pdf_files = []
-    for input_path in args.input:
-        path = Path(input_path)
-        
-        if path.is_file() and path.suffix.lower() == '.pdf':
-            pdf_files.append(str(path))
-        elif path.is_dir():
-            pattern = '**/*.pdf' if args.recursive else '*.pdf'
-            pdf_files.extend([str(p) for p in path.glob(pattern)])
-        else:
-            logger.warning(f"Percorso non valido o non è un PDF: {input_path}")
+    logger.info("=== AVVIO ELABORAZIONE MASSIVA PDF ===")
+    logger.info(f"Cartella input: {args.folder}")
+    logger.info(f"File Excel output: {args.output_excel}")
+    logger.info(f"File log discrepanze: {args.log_discrepancies}")
     
-    if not pdf_files:
-        logger.error("Nessun file PDF trovato")
+    # Verifica che la cartella input esista
+    if not Path(args.folder).exists():
+        logger.error(f"La cartella {args.folder} non esiste")
         sys.exit(1)
     
-    logger.info(f"Trovati {len(pdf_files)} file PDF da elaborare")
+    # Verifica che il file Excel abbia l'estensione corretta
+    if not args.output_excel.endswith(('.xlsx', '.xls')):
+        logger.error("Il file di output deve avere estensione .xlsx o .xls")
+        sys.exit(1)
     
-    # Elabora file
-    if len(pdf_files) == 1:
-        results = [process_single_pdf(pdf_files[0], args.output)]
-    else:
-        results = process_multiple_pdfs(pdf_files, args.output)
+    # Crea cartella di output se non esiste
+    output_dir = Path(args.output_excel).parent
+    output_dir.mkdir(parents=True, exist_ok=True)
     
-    # Esporta in Excel se richiesto
-    if args.excel:
-        export_to_excel(results, args.excel)
-    
-    # Mostra statistiche finali
-    successful = [r for r in results if r['success']]
-    logger.info(f"\n=== RISULTATI FINALI ===")
-    logger.info(f"File elaborati: {len(results)}")
-    logger.info(f"Successi: {len(successful)}")
-    logger.info(f"Errori: {len(results) - len(successful)}")
-    
-    if successful:
-        avg_confidence = sum(r['confidence'] for r in successful) / len(successful)
-        logger.info(f"Confidence medio: {avg_confidence:.2%}")
+    # Elabora TUTTI i PDF
+    try:
+        process_all_pdfs_in_folder(args.folder, args.output_excel, args.log_discrepancies)
+        logger.info("=== ELABORAZIONE COMPLETATA CON SUCCESSO ===")
+    except KeyboardInterrupt:
+        logger.warning("Elaborazione interrotta dall'utente")
+        sys.exit(1)
+    except Exception as e:
+        logger.error(f"Errore generale nell'elaborazione: {e}")
+        sys.exit(1)
 
 
 if __name__ == '__main__':

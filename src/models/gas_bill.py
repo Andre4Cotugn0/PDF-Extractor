@@ -64,6 +64,8 @@ class GasBillData:
     pdf_filename: Optional[str] = None
     extraction_timestamp: Optional[datetime] = None
     extraction_confidence: Optional[float] = None
+    extraction_method: Optional[str] = None  # Metodo di estrazione usato
+    extraction_error: Optional[str] = None  # Errore durante estrazione
     raw_text: Optional[str] = None
     
     def to_dict(self) -> Dict[str, Any]:
