@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 Script di esempio per eseguire l'estrazione massiva di PDF
 """

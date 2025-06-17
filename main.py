@@ -9,7 +9,6 @@ import argparse
 import logging
 import sys
 from pathlib import Path
-from typing import List, Dict, Any
 import pandas as pd
 from datetime import datetime
 
