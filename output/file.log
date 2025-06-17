@@ -1,0 +1,4 @@
+2025-06-17 17:51:29,142 - ThreadPoolExecutor-0_0 - discrepancies - WARNING - PDF: Bolletta201722007668.pdf - Campi critici mancanti: importo_totale
+2025-06-17 17:51:38,594 - ThreadPoolExecutor-0_4 - discrepancies - WARNING - PDF: Bolletta201722007640.pdf - Campi critici mancanti: importo_totale
+2025-06-17 17:53:53,955 - ThreadPoolExecutor-0_0 - discrepancies - WARNING - PDF: Bolletta201722007669.pdf - Campi critici mancanti: importo_totale
+2025-06-17 17:56:38,734 - ThreadPoolExecutor-0_1 - discrepancies - WARNING - PDF: Bolletta201822002941.pdf - Campi critici mancanti: importo_totale

@@ -18,7 +18,8 @@ from src.models import GasBillData
 
 def setup_logging(level: str = "INFO", log_file: str = None) -> None:
     """Configura il logging con file per discrepanze"""
-    log_format = '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    # Include nome del thread per distinguere l'output in parallelo
+    log_format = '%(asctime)s - %(threadName)s - %(name)s - %(levelname)s - %(message)s'
     
     # Logger principale
     logging.basicConfig(
@@ -48,68 +49,70 @@ def process_all_pdfs_in_folder(folder_path: str, output_excel: str, log_discrepa
     
     # Trova TUTTI i PDF ricorsivamente
     pdf_files = list(folder.rglob("*.pdf"))
-    
+
     if not pdf_files:
         logger.error(f"Nessun file PDF trovato nella cartella {folder_path}")
         sys.exit(1)
-    
+
     logger.info(f"Trovati {len(pdf_files)} file PDF da elaborare")
-    
+
     # Lista per raccogliere tutti i dati
     all_data = []
     processed_count = 0
     error_count = 0
-    
-    # Elabora ogni PDF
-    for i, pdf_path in enumerate(pdf_files, 1):
-        logger.info(f"Elaborazione file {i}/{len(pdf_files)}: {pdf_path.name}")
-        
+
+    # Parallel processing: 5 thread, ciascuno lavora su blocchi di 10 PDF
+    from concurrent.futures import ThreadPoolExecutor
+
+    def _process_pdf_item(item):
+        i, pdf_path = item
         try:
-            # Crea estrattore
             extractor = GasBillExtractor(str(pdf_path))
-            
-            # Estrae dati
             bill_data = extractor.extract_data()
-            
-            # Converte in dizionario per Excel
             data_dict = bill_data.to_dict()
             data_dict['pdf_filename'] = pdf_path.name
             data_dict['pdf_path'] = str(pdf_path)
             data_dict['processing_order'] = i
-            
-            # Verifica qualità estrazione
+
+            # Controllo campi critici
             missing_critical_fields = []
             critical_fields = ['numero_fattura', 'importo_totale', 'codice_cliente', 'cliente_nome']
-            
             for field in critical_fields:
                 if not data_dict.get(field):
                     missing_critical_fields.append(field)
-            
             if missing_critical_fields:
                 discrepancy_logger.warning(
                     f"PDF: {pdf_path.name} - Campi critici mancanti: {', '.join(missing_critical_fields)}"
                 )
-            
-            # Verifica confidence score
+
+            # Controllo confidence
             confidence = data_dict.get('extraction_confidence', 0)
             if confidence < 0.5:
                 discrepancy_logger.warning(
                     f"PDF: {pdf_path.name} - Bassa confidence: {confidence:.2%}"
                 )
-            
-            all_data.append(data_dict)
-            processed_count += 1
-            
+
+            return data_dict, False
         except Exception as e:
-            error_count += 1
             logger.error(f"Errore nell'elaborazione di {pdf_path.name}: {e}")
             discrepancy_logger.error(f"PDF: {pdf_path.name} - Errore: {str(e)}")
-            
-            # Aggiungi riga vuota con solo filename per mantenere traccia
-            error_dict = {'pdf_filename': pdf_path.name, 'pdf_path': str(pdf_path), 
-                         'processing_order': i, 'extraction_error': str(e)}
-            all_data.append(error_dict)
-    
+            error_dict = {
+                'pdf_filename': pdf_path.name,
+                'pdf_path': str(pdf_path),
+                'processing_order': i,
+                'extraction_error': str(e)
+            }
+            return error_dict, True
+
+    items = list(enumerate(pdf_files, 1))
+    with ThreadPoolExecutor(max_workers=5) as executor:
+        for data_dict, is_error in executor.map(_process_pdf_item, items, chunksize=10):
+            all_data.append(data_dict)
+            if is_error:
+                error_count += 1
+            else:
+                processed_count += 1
+
     logger.info(f"Elaborazione completata: {processed_count} successi, {error_count} errori")
     
     # Crea DataFrame e gestisce colonne dinamiche

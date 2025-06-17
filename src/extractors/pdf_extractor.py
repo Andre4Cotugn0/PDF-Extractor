@@ -102,7 +102,8 @@ class BasePDFExtractor(ABC):
                 best_text = text
                 best_method = method
         
-        self.logger.info(f"Miglior estrazione: {best_method} (score: {best_score:.2f})")
+        # Log con nome file per chiarezza quando si esegue in parallelo
+        self.logger.info(f"{self.pdf_path.name} - Miglior estrazione: {best_method} (score: {best_score:.2f})")
         return best_text, best_method
     
     def _evaluate_text_quality(self, text: str) -> float:
