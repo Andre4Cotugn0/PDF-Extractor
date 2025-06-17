@@ -1,0 +1,28 @@
+{
+  "extraction_patterns": {
+    "custom_suppliers": [
+      "ALTRO_FORNITORE",
+      "NUOVO_GESTORE"
+    ],
+    "date_formats": [
+      "%d/%m/%Y",
+      "%d-%m-%Y",
+      "%d.%m.%Y"
+    ],
+    "amount_patterns": {
+      "energia_custom": "(?:materia\\s*prima|commodity)[:\\s]*€?\\s*(\\d{1,3}(?:\\.\\d{3})*(?:,\\d{2})?)",
+      "totale_custom": "(?:importo\\s*finale|totale\\s*bolletta)[:\\s]*€?\\s*(\\d{1,3}(?:\\.\\d{3})*(?:,\\d{2})?)"
+    }
+  },
+  "output_settings": {
+    "decimal_places": 2,
+    "date_format": "ISO",
+    "include_raw_text": true,
+    "confidence_threshold": 0.5
+  },
+  "logging": {
+    "level": "INFO",
+    "file": "extractor.log",
+    "format": "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+  }
+}
